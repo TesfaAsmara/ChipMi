@@ -1,0 +1,57 @@
+def plot_graph(G):
+        import base64
+        from io import BytesIO
+        # Generate the figure **without using pyplot**.
+        fig = Figure()
+        ax = fig.subplots()
+        ax.axis("off")
+        # ax.set_title(title)
+        # define position of nodes in figure
+        pos = nx.nx_agraph.graphviz_layout(G)
+
+        # draw nodes and edges
+        nx.draw_networkx(G, pos=pos, ax=ax, with_labels=True)
+        
+        # get edge labels (if any)
+        edge_labels = nx.get_edge_attributes(G, 'weight')
+        
+        # draw edge labels (if any)
+        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
+        
+        # Save it to a temporary buffer.
+        buf = BytesIO()
+        fig.savefig(buf, format="png")
+        # Embed the result in the html output.
+        data = base64.b64encode(buf.getbuffer()).decode("ascii")
+
+        return f"<img src='data:image/png;base64,{data}'/>"
+
+
+
+
+    def Dig2vec(Graph,dimensions=2,p=1, q=1, walk_length=20, num_walks=1000, workers=4):
+        dig2vec_model = Dig2Vec(Graph, dimensions=dimensions, p=p, q=q, walk_length=walk_length, num_walks=num_walks, workers=workers)
+        model = dig2vec_model.fit(window=1)
+        emb = model.wv[[str(i) for i in Graph.number_of_nodes()]]
+        return emb
+
+    
+    def plot_embeddings(emb, num_nodes):
+        from sklearn.decomposition import PCA
+        import base64
+        from io import BytesIO
+        if emb.shape[1] > 2:
+            pca = PCA(n_components=2)
+            emb= pca.fit_transform(emb)
+        fig = Figure()
+        ax = fig.subplots()
+
+        ax.scatter(emb[:,0],emb[:,1])
+        for i, label in enumerate(num_nodes):
+            ax.annotate(label, (emb[:,0][i], emb[:,1][i]))
+        # Save it to a temporary buffer.
+        buf = BytesIO()
+        fig.savefig(buf, format="png")
+        # Embed the result in the html output.
+        data = base64.b64encode(buf.getbuffer()).decode("ascii")
+        return f"<img src='data:image/png;base64,{data}'/>"
