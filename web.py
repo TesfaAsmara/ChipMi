@@ -1,176 +1,199 @@
 import modal
 
 stub = modal.Stub()
-image = modal.Image.debian_slim().apt_install("graphviz","graphviz-dev").pip_install("flask", "iris", "pandas", "openai", "networkx", "matplotlib", "pygraphviz", "graphviz")
+image = modal.Image.debian_slim().apt_install("graphviz","graphviz-dev").pip_install("flask", "iris", "pandas", "openai", "networkx", "matplotlib", "pygraphviz", "graphviz", "numpy", "joblib", "gensim", "scikit-learn")
 
-# .run_function(preprocess_document, secrets=[modal.Secret.from_name({"OPEN_AI_KEY": "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"})])
 
-# .env({"OPENAI_API_KEY": "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"})
-
-@stub.wsgi(image=image, mounts = [modal.Mount.from_local_dir("./templates", remote_path="/root/templates")])
+@stub.function(image=image, mounts = [modal.Mount.from_local_dir("./templates", remote_path="/root/templates"), modal.Mount.from_local_dir("./static", remote_path="/root/static")])
+@stub.wsgi_app()
 def flask_app():
-    from flask import Flask, request, render_template
+    from flask import Flask, request, render_template, render_template_string
     import networkx as nx
-    import matplotlib.pyplot as plt
-    import graphviz
-    import pygraphviz
-    from matplotlib.figure import Figure
+    import numpy as np
+    from joblib import Parallel, delayed
+    import gensim
+    from datetime import datetime
 
     web_app = Flask(__name__)
 
+    def max_flow(G, current_node, destination):
+        if current_node != destination:
+            ss_weight, _ = nx.maximum_flow(G, current_node, destination)
+        else:
+            ss_weight = 0
+        return ss_weight
 
-    def print_parameters(self):
-        print(f"backward_prob = {self.backward_prob}, dimension = {self.dimensions}, walk_length = {self.walk_length}, num_walks = {self.num_walks}, window = {self.window}")
+    def speed_up(G, num_workers, transition_matrix_function):
+        nodes = G.nodes
+        # Split the nodes into chunks for each worker
+        node_chunks = np.array_split(nodes, num_workers)
+
+        # Use joblib to parallelize the calculation of ss_weight
+        ss_weights = Parallel(n_jobs=num_workers)(
+            delayed(transition_matrix_function)(G, current_node, destination)
+            for chunk in node_chunks
+            for current_node in chunk
+            for destination in nodes
+        )
+
+        # Reshape the ss_weights list into a matrix
+        ss_weights_matrix1 = np.reshape(ss_weights, (len(nodes), len(nodes)))
+        # ss_weights_matrix1 = ss_weights_matrix1/ss_weights_matrix1.sum(axis=1, keepdims=True)
 
 
-        @web_app.route('/', methods=('GET', 'POST'))
-        def create():
-            if request.method == 'POST':
-                text = request.form['text']
-                if not text:
-                    flash('Text is required!')
-                else:
-                    dig = build_digraph(text)
-                    #wdig = build_weighted_digraph(text) 
-                    #wdig_html_png = plot_graph(wdig)
-                    return str(dig)# plot_graph(dig)
-                    # dig_emb = Dig2vec(dig)
-                    
-                    # return plot_embeddings(dig_emb, dig.number_of_nodes())
-            elif request.method == "GET":
-                return render_template("form.html")
-    
-    # @stub.function(secrets=[modal.Secret({"OPEN_AI_KEY": "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"})],)
-    def preprocess_document(text):
-        import openai
-        import re
+        # check if row sums are zero
+        row_sums = ss_weights_matrix1.sum(axis=1)
+        zero_rows = np.where(row_sums == 0)[0]
 
-        openai.api_key = "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"
+        # set all elements in zero rows to zero, except for diagonal element
+        ss_weights_matrix1[zero_rows, :] = 0
+        for i in zero_rows:
+            ss_weights_matrix1[i, i] = 1
 
-        # Remove trailing white spaces
-        text = text.strip()
+        row_sums = ss_weights_matrix1.sum(axis=1)
+        # normalize matrix by row sums
+        ss_weights_matrix1 = np.divide(ss_weights_matrix1, row_sums[:, np.newaxis])
+        return ss_weights_matrix1
 
-        clean_instr = "Remove any non-alphanumeric characters that do not serve as puncutation at the end of a sentence."
-        clean_text = openai.Edit.create(input=text, 
-                              instruction=clean_instr, 
-                              engine="code-davinci-edit-001",
-                              temperature=1,
-                              top_p=0.2)
-        
-        # grab the text out of the `Edit` output
-        clean_text = clean_text.choices[0]['text']
-        
-        # construct a list of nonempty sentences
-        sentences = [sent for sent in clean_text.split('[^a-zA-Z0-9\s]') if sent != ""]
 
-        # get list of sentences which are lists of words, splitting by spaces
-        document = []
-        for sent in sentences:
-            words = sent.strip().split(" ")
-            document.append(words)
+    def generate_walks(graph, num_walks, walk_length, transition_probs):
+        """
+        Generate random walks on the graph using the specified transition probabilities.
 
-        return document
+        Parameters:
+        graph (networkx.Graph): The input graph.
+        num_walks (int): The number of random walks to generate for each node in the graph.
+        walk_length (int): The length of each random walk.
+        transition_probs (np.ndarray): A 2D numpy array of shape (num_nodes, num_nodes) containing the transition
+            probabilities between each pair of nodes in the graph.
 
-    def get_entities(document):
-        # in our case, entities are all unique words
-        unique_words = []
-        for sent in document:
-            for word in sent:
-                if word not in unique_words:
-                    unique_words.append(word)
-        return unique_words
+        Returns:
+        List of walks. Each walk is a list of nodes.
+        """
+        walks = []
+        nodes = list(graph.nodes())
 
-    def get_relations(document):
-        # in our case, relations are bigrams in sentences
-        bigrams = []
-        for sent in document:
-            for i in range(len(sent)-1):
-                # for every word and the next in the sentence
-                pair = [sent[i], sent[i+1]]
-                # only add unique bigrams
-                if pair not in bigrams:
-                    bigrams.append(pair)
-        return bigrams
+        # Convert the transition probabilities to a dictionary of dictionaries for faster access
+        probs = {}
+        for i, node_i in enumerate(nodes):
+            probs[node_i] = {}
+            for j, node_j in enumerate(nodes):
+                probs[node_i][node_j] = transition_probs[i][j]
 
-    def build_digraph(doc):
-        # preprocess document for standardization
-        pdoc = preprocess_document(doc)
-        
-        # get graph nodes
-        nodes = get_entities(pdoc)
-        
-        # get graph edges
-        edges = get_relations(pdoc)
-        
-        # create graph structure with NetworkX
-        G = nx.DiGraph()
-        G.add_nodes_from(nodes)
-        G.add_edges_from(edges)
-        
-        return G
+        for node in nodes:
+            for walk in range(num_walks):
+                walk_list = [node]
+                for step in range(walk_length - 1):
+                    neighbors = list(probs[walk_list[-1]].keys())
+                    probabilities = list(probs[walk_list[-1]].values())
+                    next_node = np.random.choice(neighbors, p=probabilities)
+                    walk_list.append(next_node)
+                walks.append(walk_list)
 
-    def get_weighted_edges(document):
-        # in our case, relations are bigrams in sentences
-        # weights are number of equal bigrams
-        # use a dict to store number of counts
-        bigrams = {}
-        for sent in document:
-            for i in range(len(sent)-1):
-            
-                # transform to hashable key in dict
-                pair = str([sent[i], sent[i+1]])
-                
-                if pair not in bigrams.keys():
-                    # weight = 1
-                    bigrams[pair] = 1
-                else:
-                    # already exists, weight + 1
-                    bigrams[pair] += 1
-                    
-        # convert to NetworkX standard form each edge connecting nodes u and v = [u, v, weight]
-        weighted_edges_format = []
-        for pair, weight in bigrams.items():
-            # revert back from hashable format
-            w1, w2 = eval(pair)
-            weighted_edges_format.append([w1, w2, weight])
-            
-        return weighted_edges_format
+        return walks
 
-    def build_weighted_digraph(document):
-        # preprocess document for standardization
-        pdoc = preprocess_document(document)
-        
-        # get graph nodes
-        nodes = get_entities(pdoc)
-        
-        # get weighted edges
-        weighted_edges = get_weighted_edges(pdoc)
-        
-        # create graph structure with NetworkX
-        G = nx.DiGraph()
-        G.add_nodes_from(nodes)
-        G.add_weighted_edges_from(weighted_edges)
-        
-        return G
-
-    def plot_graph(G, title=None):
+    def plot_emb(emb, model, title=""):
         import base64
         from io import BytesIO
+        from matplotlib.figure import Figure
+        from sklearn.decomposition import PCA
         # Generate the figure **without using pyplot**.
-        fig = Figure()
+        fig = Figure(figsize=(8, 8))
         ax = fig.subplots()
         ax.set_axis_off()
 
-        # define position of nodes in figure
-        pos = nx.nx_agraph.graphviz_layout(G)
-
-        # draw nodes and edges
-        nx.draw_networkx(G, pos=pos, ax=ax, with_labels=True)
-        # Save it to a temporary buffer.
+        if emb.shape[1] > 2:
+            pca = PCA(n_components=2)
+            emb= pca.fit_transform(emb)
+        ax.scatter(emb[:,0],emb[:,1])
+        for i, label in enumerate(model.wv.index_to_key):
+            ax.annotate(label, (emb[:,0][i], emb[:,1][i]))
+        
+        # Convert the figure to a base64 string
         buf = BytesIO()
-        fig.savefig(buf, format="png")
-        # Embed the result in the html output.
+        fig.savefig(buf, format="png", bbox_inches="tight")
         data = base64.b64encode(buf.getbuffer()).decode("ascii")
         return f"<img src='data:image/png;base64,{data}'/>"
+
+    def getnet(G,func,num_walks=100, walk_length=80, num_workers=4, window=10,dimension=128, num_folds=2):
+        from gensim.models import Word2Vec
+        ss_weights_matrix = speed_up(G,num_workers,func)
+        walks = generate_walks(G, num_walks=num_walks, walk_length=walk_length, transition_probs = ss_weights_matrix)
+        
+            # train the Word2Vec model on the random walks
+        model = Word2Vec(walks, window=window, workers=num_workers, vector_size=dimension)
+        emb=model.wv[[i for i in model.wv.key_to_index]]
+        plot = plot_emb(emb, model)
+        # results = cluster_scoring(emb,labels)
+        return plot
+
+    # @web_app.route("/", methods=["GET", "POST"])
+    # def home():
+    #     if request.method == "POST":
+    #         user_input = request.form.get("text")
+    #         edge_list = eval(user_input)
+    #         try:
+    #             G = nx.DiGraph(edge_list)
+    #             for u, v in G.edges:
+    #                 if "weight" in G[u][v]:
+    #                     G[u][v]['capacity'] = G[u][v]['weight']
+    #                 else:
+    #                     G[u][v]['capacity'] = 1
+    #             output = getnet(G,max_flow)
+    #             return str(output)
+    #         except nx.exception.NetworkXError as e:
+    #             return f"Input does not create a valid networkx graph. Error message: {e}" 
+    #     return render_template('form.html')
+    @web_app.route("/")
+    @web_app.route("/home")
+    def home():
+        """Renders the home page."""
+        return render_template(
+            'index.html',
+            title='Home Page',
+            year=datetime.now().year,
+        )
+
+    @web_app.route("/contact")
+    def contact():
+        """Renders the contact page."""
+        return render_template(
+            'contact.html',
+            title='Contact',
+            year=datetime.now().year,
+            message='Our contact page.'
+        )
+    @web_app.route("/about")
+    def about():
+        """Renders the about page."""
+        return render_template(
+            'about.html',
+            title='About',
+            year=datetime.now().year,
+            message='Your application description page.'
+        )
+
+    @web_app.route("/", methods=["GET", "POST"])
+    def index():
+        user_input = ""
+        if request.method == 'POST':
+            user_input = request.form.get('user_input')
+            edge_list = eval(user_input)
+            try:
+                G = nx.DiGraph(edge_list)
+                for u, v in G.edges:
+                    if "weight" in G[u][v]:
+                        G[u][v]['capacity'] = G[u][v]['weight']
+                    else:
+                        G[u][v]['capacity'] = 1
+                output = getnet(G,max_flow)
+                return render_template_string(output)
+            except nx.exception.NetworkXError as e:
+                output = f"Input does not create a valid networkx graph. Error message: {e}"
+                return output
+
+        return render_template('index.html')
+
+
 
     return web_app

@@ -1,0 +1,40 @@
+{% extends "layout.html" %}
+
+{% block content %}
+
+<style>
+.textBox-btn {
+    width :700px;
+    height :800px;
+    border-radius: 50px;
+    padding: 10px 20px;
+    align-content: center;
+}
+</style>
+<style>
+    .submit-btn {
+        border-radius: 50px;
+        padding: 10px 20px;
+        align-content: center;
+        
+    }
+</style>
+
+
+
+<div class="jumbotron">
+    <h1>Enter a NetworkX edgelist that defines a graph that is your chip design.</h1>
+    <form action="/" method="POST">
+        <input type="text" name="user_input" class="textBox" required>
+        <button type="submit" class="submit-btn">Submit</button>
+    </form>
+    {% if user_input %}
+    <h2>metric2vec embedding:</h2>
+    <p>{{ user_input }}</p>
+    <p>
+        <img src='data:image/png;base64,{{data}}'/>
+    </p>
+    {% endif %}
+    <p class="lead"></p>
+</div>
+{% endblock %}
